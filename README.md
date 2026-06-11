@@ -24,8 +24,6 @@ wget -qO- https://raw.githubusercontent.com/gpocali/alpine-linux-pi-upgrade/main
 
 ```
 
-*(If your default branch is `master` instead of `main`, adjust the URL accordingly).*
-
 ## What the Script Does
 
 1. Locates the active Raspberry Pi boot partition.
