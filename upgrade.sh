@@ -59,7 +59,7 @@ done
 rm -rf "$TMP_DIR"
 
 echo "Remounting boot partition as read-only..."
-mount -o remount,ro "$BOOT_PART"
+mount -o remount,ro "$BOOT_PART" || true
 
 echo "Updating repositories..."
 cat <<EOF > /etc/apk/repositories
