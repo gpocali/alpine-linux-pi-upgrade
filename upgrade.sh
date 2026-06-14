@@ -63,8 +63,8 @@ mount -o remount,ro "$BOOT_PART" || true
 
 echo "Updating repositories..."
 cat <<EOF > /etc/apk/repositories
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/main
-http://dl-cdn.alpinelinux.org/alpine/latest-stable/community
+https://dl-cdn.alpinelinux.org/alpine/latest-stable/main
+https://dl-cdn.alpinelinux.org/alpine/latest-stable/community
 EOF
 
 echo "Creating post-upgrade finish script..."
