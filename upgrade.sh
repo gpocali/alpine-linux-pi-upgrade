@@ -90,7 +90,7 @@ echo "Cleaning up staging directory..."
 rm -rf "$STAGING_DIR"
 
 echo "Remounting boot partition as read-only..."
-mount -o remount,ro "$BOOT_PART"
+mount -o remount,ro "$BOOT_PART" || true
 
 echo "Updating repositories to HTTPS and latest-stable..."
 sed -i 's|http://|https://|g' /etc/apk/repositories
