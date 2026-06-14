@@ -1,5 +1,5 @@
 #!/bin/ash
-# Alpine Linux Raspberry Pi Upgrade Script
+# Alpine Linux Raspberry Pi Upgrade Script (Low-Memory Optimized)
 
 # Fail immediately if any command exits with a non-zero status
 set -e
@@ -29,42 +29,49 @@ echo "Fetching latest release info..."
 FILENAME=$(wget -qO- "$YAML_URL" | awk '/file:.*rpi.*\.tar\.gz/ {print $2; exit}')
 DOWNLOAD_LINK="${BASE_URL}/${FILENAME}"
 
-TMP_DIR=$(mktemp -d)
-TAR_FILE="${TMP_DIR}/image.tar.gz"
-
-echo "Downloading ${FILENAME}..."
-wget -qO "$TAR_FILE" "$DOWNLOAD_LINK"
-
-echo "Extracting image..."
-tar -C "$TMP_DIR" -xf "$TAR_FILE"
-rm "$TAR_FILE"
-
-echo "Remounting boot partition as read-write..."
+echo "Remounting boot partition as read-write to prepare staging area..."
 mount -o remount,rw "$BOOT_PART"
 
+# Create staging directory directly on physical media to bypass RAM (tmpfs) limits
+STAGING_DIR="${BOOT_PART}/upgrade_staging"
+mkdir -p "$STAGING_DIR"
+TAR_FILE="${STAGING_DIR}/image.tar.gz"
+
+echo "Downloading ${FILENAME} directly to boot media..."
+wget -qO "$TAR_FILE" "$DOWNLOAD_LINK"
+
+echo "Extracting image on boot media..."
+tar -C "$STAGING_DIR" -xf "$TAR_FILE"
+
+echo "Removing tarball to free up disk space before moving files..."
+rm "$TAR_FILE"
+
 echo "Replacing boot directories..."
-for dir in "$TMP_DIR"/*/; do
+for dir in "$STAGING_DIR"/*/; do
     [ -d "$dir" ] || continue
     dirname=$(basename "$dir")
+    
+    # Safety check: do not process the staging directory itself
+    [ "$dirname" = "upgrade_staging" ] && continue
+
     rm -rf "${BOOT_PART:?}/${dirname}"
     mv "$dir" "$BOOT_PART/"
 done
 
 echo "Replacing root boot files..."
 rm -f "$BOOT_PART"/*.dtb "$BOOT_PART"/*.elf "$BOOT_PART"/*.dat
-for file in "$TMP_DIR"/*; do
+for file in "$STAGING_DIR"/*; do
     [ -f "$file" ] && mv "$file" "$BOOT_PART/"
 done
 
-rm -rf "$TMP_DIR"
+echo "Cleaning up staging directory..."
+rm -rf "$STAGING_DIR"
 
 echo "Remounting boot partition as read-only..."
-mount -o remount,ro "$BOOT_PART"
+mount -o remount,ro "$BOOT_PART" || true
 
 echo "Updating repositories to HTTPS and latest-stable..."
-# 1. Convert all http to https (affects active and commented lines)
 sed -i 's|http://|https://|g' /etc/apk/repositories
-# 2. Upgrade version tags to latest-stable (ignores edge)
 sed -i -E 's|/v[0-9]+\.[0-9]+/|/latest-stable/|g' /etc/apk/repositories
 
 echo "Creating post-upgrade finish script..."
@@ -72,7 +79,6 @@ rc-update add local default
 
 cat <<'EOF' > /etc/local.d/99-finish-upgrade.start
 #!/bin/ash
-# Log output to a file in case troubleshooting is needed after reboot
 exec > /var/log/alpine-upgrade.log 2>&1
 
 echo "Starting post-upgrade sequence..."
@@ -108,11 +114,9 @@ fi
 
 echo "Network is up. Performing base system upgrade..."
 apk update
-# --available forces upgrades to latest-stable even if local versions seem higher/conflicting
 apk upgrade --available
 
 echo "Reinstalling all configured packages to ensure clean binary state..."
-# Extract the list of explicitly installed packages from the world file
 WORLD_PKGS=$(grep -v '^#' /etc/apk/world | tr '\n' ' ')
 if [ -n "$WORLD_PKGS" ]; then
     apk add --force-reinstall $WORLD_PKGS
