@@ -59,34 +59,80 @@ done
 rm -rf "$TMP_DIR"
 
 echo "Remounting boot partition as read-only..."
-mount -o remount,ro "$BOOT_PART" || true
+mount -o remount,ro "$BOOT_PART"
 
-echo "Updating repositories..."
-cat <<EOF > /etc/apk/repositories
-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main
-https://dl-cdn.alpinelinux.org/alpine/latest-stable/community
-EOF
+echo "Updating repositories to HTTPS and latest-stable..."
+# 1. Convert all http to https (affects active and commented lines)
+sed -i 's|http://|https://|g' /etc/apk/repositories
+# 2. Upgrade version tags to latest-stable (ignores edge)
+sed -i -E 's|/v[0-9]+\.[0-9]+/|/latest-stable/|g' /etc/apk/repositories
 
 echo "Creating post-upgrade finish script..."
 rc-update add local default
 
 cat <<'EOF' > /etc/local.d/99-finish-upgrade.start
 #!/bin/ash
-sleep 5
+# Log output to a file in case troubleshooting is needed after reboot
+exec > /var/log/alpine-upgrade.log 2>&1
 
-echo "Completing Alpine package upgrades..."
+echo "Starting post-upgrade sequence..."
+
+check_network() {
+    ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 || ping -c 1 -W 2 dl-cdn.alpinelinux.org >/dev/null 2>&1
+}
+
+echo "Waiting for network connectivity..."
+NETWORK_UP=false
+for i in $(seq 1 6); do
+    if check_network; then
+        NETWORK_UP=true
+        break
+    fi
+    sleep 5
+done
+
+if [ "$NETWORK_UP" = false ]; then
+    echo "Network check failed. Attempting to restart networking service..."
+    rc-service networking restart
+    sleep 5
+    if ! check_network; then
+        echo "Still no network. Forcing DHCP renewal on hardwired interface (eth0)..."
+        udhcpc -i eth0 -q
+        sleep 5
+        if ! check_network; then
+            echo "CRITICAL: Network could not be restored. Aborting upgrade finish."
+            exit 1
+        fi
+    fi
+fi
+
+echo "Network is up. Performing base system upgrade..."
 apk update
-apk upgrade
+# --available forces upgrades to latest-stable even if local versions seem higher/conflicting
+apk upgrade --available
+
+echo "Reinstalling all configured packages to ensure clean binary state..."
+# Extract the list of explicitly installed packages from the world file
+WORLD_PKGS=$(grep -v '^#' /etc/apk/world | tr '\n' ' ')
+if [ -n "$WORLD_PKGS" ]; then
+    apk add --force-reinstall $WORLD_PKGS
+fi
+
+echo "Syncing and cleaning package cache..."
 apk cache sync
 apk cache clean
 
 echo "Cleaning up run-once script..."
 rm -f "$0"
 
+echo "Committing final state..."
 lbu commit -d
+
+echo "Rebooting into finalized system..."
+reboot
 EOF
 
 chmod +x /etc/local.d/99-finish-upgrade.start
 
-echo "Committing initial changes and rebooting..."
+echo "Committing initial changes and rebooting into new kernel..."
 lbu commit -d && reboot
