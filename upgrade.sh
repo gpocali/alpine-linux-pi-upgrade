@@ -1,5 +1,5 @@
 #!/bin/ash
-# Alpine Linux Raspberry Pi Upgrade Script (Low-Memory & Auto-Update Optimized)
+# Alpine Linux Raspberry Pi Upgrade Script (Multi-Arch, Low-Memory & Auto-Update)
 
 # Fail immediately if any command exits with a non-zero status
 set -e
@@ -15,6 +15,37 @@ while getopts "ac" opt; do
         \? ) echo "Usage: $0 [-a] (install auto-update cron)" >&2; exit 1 ;;
     esac
 done
+
+echo "Detecting Raspberry Pi hardware model..."
+PI_MODEL=$(cat /proc/device-tree/model 2>/dev/null || echo "Unknown")
+
+case "$PI_MODEL" in
+    *"Raspberry Pi 5"*|*"Raspberry Pi 4"*|*"Raspberry Pi 3"*|*"Raspberry Pi Zero 2"*|*"Raspberry Pi Compute Module 3"*|*"Raspberry Pi Compute Module 4"*)
+        ARCH="aarch64"
+        ;;
+    *"Raspberry Pi 2"*)
+        ARCH="armv7"
+        ;;
+    *"Raspberry Pi Zero"*|*"Raspberry Pi Model"*|*"Raspberry Pi 1"*)
+        # Original Pi 1 and Zero 1
+        ARCH="armhf"
+        ;;
+    *)
+        # Fallback to the currently running kernel architecture if hardware parsing fails
+        CURRENT_ARCH=$(uname -m)
+        echo "Warning: Unrecognized Pi model '$PI_MODEL'."
+        if [ "$CURRENT_ARCH" = "aarch64" ]; then 
+            ARCH="aarch64"
+        elif [ "$CURRENT_ARCH" = "armv7l" ]; then 
+            ARCH="armv7"
+        else 
+            ARCH="armhf"
+        fi
+        ;;
+esac
+
+echo "Hardware Detected: $PI_MODEL"
+echo "Target Architecture: $ARCH"
 
 echo "Detecting boot partition..."
 BOOT_PART=""
@@ -33,17 +64,23 @@ fi
 
 echo "Boot partition identified at: $BOOT_PART"
 
-YAML_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/latest-releases.yaml"
+# Inject the dynamically detected ARCH into the URL
+YAML_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/${ARCH}/latest-releases.yaml"
 BASE_URL="${YAML_URL%/*}"
 
 echo "Fetching latest release info..."
 FILENAME=$(wget -qO- "$YAML_URL" | awk '/file:.*rpi.*\.tar\.gz/ {print $2; exit}')
+
+if [ -z "$FILENAME" ]; then
+    echo "Error: Could not determine the latest filename for architecture $ARCH. The CDN might be unreachable."
+    exit 1
+fi
+
 DOWNLOAD_LINK="${BASE_URL}/${FILENAME}"
 
 # Version check for automated runs
 CURRENT_VER=$(cat /etc/alpine-release 2>/dev/null || echo "0.0.0")
 
-# If the current version string exists inside the latest filename, we are up to date
 if echo "$FILENAME" | grep -q "$CURRENT_VER"; then
     if [ "$CRON_MODE" = 1 ]; then
         echo "System is already running the latest version ($CURRENT_VER). Cron job exiting cleanly."
@@ -96,11 +133,13 @@ echo "Updating repositories to HTTPS and latest-stable..."
 sed -i 's|http://|https://|g' /etc/apk/repositories
 sed -i -E 's|/v[0-9]+\.[0-9]+/|/latest-stable/|g' /etc/apk/repositories
 
+# Force the package manager to recognize the new architecture immediately on the next boot
+echo "$ARCH" > /etc/apk/arch
+
 if [ "$INSTALL_CRON" = 1 ]; then
     echo "Installing monthly cron job for automatic updates..."
     mkdir -p /etc/periodic/monthly
     
-    # Create the cron script that calls the raw GitHub file with the -c flag
     cat << 'CRONEOF' > /etc/periodic/monthly/alpine-upgrade
 #!/bin/ash
 # Automated monthly Alpine upgrade
@@ -110,7 +149,6 @@ CRONEOF
     
     chmod +x /etc/periodic/monthly/alpine-upgrade
     
-    # Ensure the cron service is enabled and started
     rc-update add crond default
     rc-service crond start || true
 fi
